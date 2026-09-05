@@ -1,0 +1,514 @@
+<title>Swatchcam</title>
+<meta name="theme-color" content="#101216">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Manrope:wght@400;500;600;700&display=swap">
+<style>
+  :root{
+    --bg:#101216;
+    --ink:#f3efe9;
+    --muted:#a2a7b0;
+    --panel:rgba(18,20,25,.66);
+    --panel-solid:#15171c;
+    --line:rgba(255,255,255,.12);
+    --line-soft:rgba(255,255,255,.07);
+    --accent:#e6774d;
+    --good:#7fc99a;
+    --shadow:0 10px 34px rgba(0,0,0,.5);
+    --ui:"Manrope",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    --display:"Fraunces","Manrope",Georgia,serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font-family:var(--ui);-webkit-font-smoothing:antialiased;
+    overflow:hidden;overscroll-behavior:none;
+    touch-action:manipulation;
+  }
+  button{font-family:inherit;color:inherit;cursor:pointer}
+
+  /* ---- Stage ---- */
+  #stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#000}
+  #view{width:100%;height:100%;object-fit:cover;display:block;background:#000}
+  #view.picking{cursor:crosshair}
+
+  /* sample marker */
+  #marker{position:fixed;width:54px;height:54px;margin:-27px 0 0 -27px;border-radius:50%;
+    border:2px solid #fff;box-shadow:0 0 0 2px rgba(0,0,0,.45),0 0 18px rgba(0,0,0,.5);
+    pointer-events:none;opacity:0;transform:scale(.6);transition:opacity .25s,transform .25s;z-index:40}
+  #marker.show{opacity:1;transform:scale(1)}
+  #marker::after{content:"";position:absolute;inset:22px;border-radius:50%;background:#fff;
+    box-shadow:0 0 0 2px rgba(0,0,0,.4)}
+
+  /* ---- Top bar ---- */
+  .topbar{position:fixed;top:0;left:0;right:0;z-index:30;
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:calc(env(safe-area-inset-top) + 12px) 16px 26px;
+    background:linear-gradient(180deg,rgba(8,9,11,.72),rgba(8,9,11,0));pointer-events:none}
+  .topbar > *{pointer-events:auto}
+  .brand{display:flex;align-items:baseline;gap:8px;line-height:1}
+  .brand b{font-family:var(--display);font-weight:600;font-size:22px;letter-spacing:.2px}
+  .brand span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.14em}
+  .iconbtn{width:42px;height:42px;border-radius:50%;border:1px solid var(--line);
+    background:var(--panel);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    display:grid;place-items:center;font-size:18px;transition:background .15s,transform .1s}
+  .iconbtn:active{transform:scale(.92)}
+  .iconbtn.on{background:var(--accent);border-color:transparent;color:#1a0f09}
+
+  /* ---- Hint chip ---- */
+  #hint{position:fixed;left:50%;top:calc(env(safe-area-inset-top) + 70px);transform:translateX(-50%);
+    z-index:25;background:var(--panel);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    border:1px solid var(--line);border-radius:999px;padding:9px 16px;font-size:13px;font-weight:500;
+    display:flex;align-items:center;gap:8px;box-shadow:var(--shadow);
+    transition:opacity .3s;max-width:90vw}
+  #hint .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none;
+    animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+
+  /* ---- Bottom dock ---- */
+  .dock{position:fixed;left:0;right:0;bottom:0;z-index:30;
+    padding:34px 0 calc(env(safe-area-inset-bottom) + 14px);
+    background:linear-gradient(0deg,rgba(8,9,11,.82),rgba(8,9,11,0))}
+
+  /* tolerance row */
+  .tune{display:flex;align-items:center;gap:12px;padding:0 20px 12px;max-width:640px;margin:0 auto}
+  .tune label{font-size:10px;text-transform:uppercase;letter-spacing:.13em;color:var(--muted);flex:none;width:58px}
+  input[type=range]{-webkit-appearance:none;appearance:none;height:4px;border-radius:99px;flex:1;
+    background:rgba(255,255,255,.2);outline:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;
+    background:#fff;box-shadow:0 2px 6px rgba(0,0,0,.5);border:none}
+  input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:#fff;border:none;box-shadow:0 2px 6px rgba(0,0,0,.5)}
+
+  /* swatch strip */
+  .strip{display:flex;gap:12px;overflow-x:auto;padding:6px 20px 4px;scroll-snap-type:x proximity;
+    -webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .strip::-webkit-scrollbar{display:none}
+  .chip{flex:none;width:60px;scroll-snap-align:center;text-align:center;background:none;border:none;padding:0}
+  .chip .sw{width:60px;height:60px;border-radius:16px;border:2px solid rgba(255,255,255,.16);
+    box-shadow:inset 0 0 0 1px rgba(0,0,0,.15);transition:transform .12s,border-color .12s;position:relative}
+  .chip.active .sw{border-color:#fff;transform:translateY(-4px) scale(1.04)}
+  .chip.active .sw::after{content:"✓";position:absolute;inset:0;display:grid;place-items:center;
+    font-size:20px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.6);font-weight:700}
+  .chip .nm{display:block;margin-top:6px;font-size:10px;line-height:1.15;color:var(--muted);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500}
+  .chip.active .nm{color:var(--ink)}
+  .chip.add .sw{display:grid;place-items:center;font-size:26px;color:var(--muted);
+    background:rgba(255,255,255,.05);border-style:dashed}
+
+  /* ---- Onboarding / permission screen ---- */
+  #gate{position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;justify-content:center;
+    gap:26px;padding:32px 26px calc(env(safe-area-inset-bottom) + 32px);
+    background:radial-gradient(120% 90% at 50% 0%,#1c2027 0%,#0c0d10 62%)}
+  #gate h1{font-family:var(--display);font-weight:600;font-size:40px;line-height:1.02;margin:0;letter-spacing:.3px}
+  #gate .lede{color:var(--muted);font-size:15.5px;line-height:1.55;max-width:34ch;margin:0}
+  #gate .steps{display:flex;flex-direction:column;gap:14px;margin:4px 0 0}
+  #gate .steps li{display:flex;gap:13px;align-items:flex-start;list-style:none;font-size:14.5px;line-height:1.4}
+  #gate .steps .n{flex:none;width:26px;height:26px;border-radius:50%;background:rgba(230,119,77,.16);
+    color:var(--accent);font-weight:700;font-size:13px;display:grid;place-items:center;margin-top:1px}
+  #gate ol{padding:0;margin:0}
+  .cta{width:100%;padding:17px;border-radius:16px;border:none;background:var(--accent);color:#160c06;
+    font-size:16px;font-weight:700;letter-spacing:.2px;box-shadow:0 8px 26px rgba(230,119,77,.34)}
+  .cta:active{transform:scale(.99)}
+  .ghost{width:100%;padding:15px;border-radius:16px;border:1px solid var(--line);background:transparent;
+    color:var(--ink);font-size:14.5px;font-weight:600}
+  .gate-actions{display:flex;flex-direction:column;gap:11px}
+  #gate .fine{font-size:12px;color:var(--muted);text-align:center;line-height:1.5}
+  #gate .fine b{color:var(--ink);font-weight:600}
+  .wordmark{display:flex;align-items:baseline;gap:9px}
+  .wordmark b{font-family:var(--display);font-weight:600;font-size:15px}
+  .wordmark span{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+  .swatch-preview{display:flex;gap:0;border-radius:12px;overflow:hidden;height:38px;box-shadow:var(--shadow)}
+  .swatch-preview i{flex:1}
+
+  /* ---- Add-color sheet ---- */
+  .sheet-wrap{position:fixed;inset:0;z-index:70;display:none;align-items:flex-end;justify-content:center;
+    background:rgba(0,0,0,.5)}
+  .sheet-wrap.open{display:flex}
+  .sheet{width:100%;max-width:520px;background:var(--panel-solid);border:1px solid var(--line);
+    border-bottom:none;border-radius:22px 22px 0 0;padding:22px 22px calc(env(safe-area-inset-bottom) + 22px);
+    box-shadow:var(--shadow)}
+  .sheet h2{font-family:var(--display);font-weight:600;font-size:22px;margin:0 0 4px}
+  .sheet p{color:var(--muted);font-size:13.5px;margin:0 0 18px;line-height:1.5}
+  .field{display:flex;flex-direction:column;gap:7px;margin-bottom:16px}
+  .field span{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted)}
+  .field input[type=text]{background:rgba(255,255,255,.06);border:1px solid var(--line);border-radius:12px;
+    padding:13px 14px;color:var(--ink);font-size:15px;font-family:inherit}
+  .field input[type=text]:focus{outline:none;border-color:var(--accent)}
+  .colorrow{display:flex;gap:12px;align-items:center}
+  .colorrow input[type=color]{width:56px;height:52px;border:1px solid var(--line);border-radius:12px;
+    background:none;padding:4px;flex:none}
+  .sheet-actions{display:flex;gap:11px;margin-top:6px}
+  .sheet-actions button{flex:1;padding:15px;border-radius:13px;font-size:15px;font-weight:700;border:none}
+  .btn-save{background:var(--accent);color:#160c06}
+  .btn-cancel{background:rgba(255,255,255,.07);color:var(--ink);border:1px solid var(--line)!important}
+  .btn-del{background:rgba(255,80,80,.14);color:#ff9a9a;flex:none!important;padding:15px 18px!important}
+
+  .hidden{display:none!important}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div id="stage">
+  <canvas id="view"></canvas>
+</div>
+<div id="marker"></div>
+
+<!-- Top bar -->
+<div class="topbar hidden" id="topbar">
+  <div class="brand"><b>Swatchcam</b><span>preview</span></div>
+  <div style="display:flex;gap:10px">
+    <button class="iconbtn" id="btnCompare" title="Hold to see the room as-is">👁</button>
+    <button class="iconbtn" id="btnFreeze" title="Freeze the frame">⏸</button>
+    <button class="iconbtn" id="btnFlip" title="Switch camera">🔄</button>
+  </div>
+</div>
+
+<div id="hint" class="hidden"><span class="dot"></span><span id="hintText">Tap a wall to sample it</span></div>
+
+<!-- Bottom dock -->
+<div class="dock hidden" id="dock">
+  <div class="tune">
+    <label for="tol">Spread</label>
+    <input type="range" id="tol" min="6" max="46" value="20">
+  </div>
+  <div class="strip" id="strip"></div>
+</div>
+
+<!-- Gate -->
+<div id="gate">
+  <div class="wordmark"><b>Swatchcam</b><span>by the wall, in real light</span></div>
+  <div>
+    <h1>See the color<br>before you buy the can.</h1>
+    <p class="lede">Point your phone at a wall, tap it, and pick a paint. The wall repaints live — with its own shadows and highlights kept intact — as you move around the room.</p>
+  </div>
+  <div class="swatch-preview" id="gatePreview"></div>
+  <ol class="steps">
+    <li><span class="n">1</span><div><b>Enable the camera</b> and aim at the wall you're thinking about.</div></li>
+    <li><span class="n">2</span><div><b>Tap the wall</b> once so it knows which surface to repaint.</div></li>
+    <li><span class="n">3</span><div><b>Pick a swatch</b> — add your own colors with the <b>+</b>.</div></li>
+  </ol>
+  <div class="gate-actions">
+    <button class="cta" id="btnStart">Enable camera</button>
+    <button class="ghost" id="btnPhoto">Try it on a photo instead</button>
+    <p class="fine" id="gateFine">Runs entirely on your phone — <b>no photo ever leaves the device.</b></p>
+  </div>
+</div>
+
+<!-- Add color sheet -->
+<div class="sheet-wrap" id="sheetWrap">
+  <div class="sheet">
+    <h2 id="sheetTitle">Add a paint color</h2>
+    <p>Match the swatch in your hand. Enter its name and tap the square to dial in the hex — most paint brands print it on the back of the card.</p>
+    <div class="field">
+      <span>Color name</span>
+      <input type="text" id="inName" placeholder="e.g. Accessible Beige" autocomplete="off">
+    </div>
+    <div class="field">
+      <span>Color</span>
+      <div class="colorrow">
+        <input type="color" id="inColor" value="#c9b89e">
+        <input type="text" id="inHex" placeholder="#C9B89E" autocomplete="off" spellcheck="false">
+      </div>
+    </div>
+    <div class="sheet-actions">
+      <button class="btn-del hidden" id="btnDelete">Delete</button>
+      <button class="btn-cancel" id="btnCancel">Cancel</button>
+      <button class="btn-save" id="btnSaveColor">Save</button>
+    </div>
+  </div>
+</div>
+
+<input type="file" id="fileInput" accept="image/*" class="hidden">
+
+<script>
+(function(){
+  "use strict";
+  const $ = s => document.querySelector(s);
+
+  // ---------- Paint library ----------
+  const DEFAULTS = [
+    {n:"Chantilly Lace", h:"#f4f3ee"},
+    {n:"Accessible Beige", h:"#d3c6b1"},
+    {n:"Repose Gray",     h:"#c9c5bd"},
+    {n:"Sea Salt",        h:"#cdd4cb"},
+    {n:"Evergreen Fog",   h:"#95998c"},
+    {n:"Sage",            h:"#9ca584"},
+    {n:"Blush Clay",      h:"#d8a891"},
+    {n:"Terracotta",      h:"#b1613f"},
+    {n:"Hale Navy",       h:"#3b4654"},
+    {n:"Kendall Charcoal",h:"#5a564d"},
+    {n:"Cyberspace",      h:"#3c4448"},
+    {n:"Black Fox",       h:"#4a4038"}
+  ];
+  const LS_KEY = "swatchcam.colors.v1";
+  let colors = load();
+  function load(){
+    try{const v=JSON.parse(localStorage.getItem(LS_KEY));if(Array.isArray(v)&&v.length)return v;}catch(e){}
+    return DEFAULTS.slice();
+  }
+  function save(){try{localStorage.setItem(LS_KEY,JSON.stringify(colors));}catch(e){}}
+
+  // ---------- State ----------
+  const view = $("#view"), ctx = view.getContext("2d",{willReadFrequently:true});
+  let video=null, stream=null, facing="environment";
+  let mode=null;              // 'camera' | 'image'
+  let imgBitmap=null;         // for photo mode
+  let ref=null;               // sampled wall color {r,g,b, lum, cr,cg}
+  let target=null;            // {r,g,b}
+  let activeIdx=-1;
+  let tol=20, strength=0.9;
+  let frozen=false, compare=false;
+  let rafId=null;
+  let IW=0, IH=0;             // internal processing size
+
+  const PROC_W = 700;         // processing width cap for performance
+
+  function hexToRgb(h){h=h.replace('#','');if(h.length===3)h=h.split('').map(c=>c+c).join('');
+    return {r:parseInt(h.slice(0,2),16),g:parseInt(h.slice(2,4),16),b:parseInt(h.slice(4,6),16)};}
+  function lum(r,g,b){return 0.299*r+0.587*g+0.114*b;}
+
+  // ---------- Rendering ----------
+  function drawSourceToCanvas(){
+    // establish internal size from current source
+    let sw,sh;
+    if(mode==="camera"){ sw=video.videoWidth; sh=video.videoHeight; }
+    else { sw=imgBitmap.width; sh=imgBitmap.height; }
+    if(!sw||!sh) return false;
+    const scale = Math.min(1, PROC_W/sw);
+    IW = Math.round(sw*scale); IH = Math.round(sh*scale);
+    if(view.width!==IW||view.height!==IH){view.width=IW;view.height=IH;}
+    if(mode==="camera") ctx.drawImage(video,0,0,IW,IH);
+    else ctx.drawImage(imgBitmap,0,0,IW,IH);
+    return true;
+  }
+
+  function process(){
+    if(!ref||!target||compare) return;    // nothing to recolor / showing original
+    const img = ctx.getImageData(0,0,IW,IH);
+    const d = img.data;
+    const tR=target.r,tG=target.g,tB=target.b;
+    const refLum=Math.max(1,ref.lum);
+    // tolerance -> chromaticity distance threshold (0..~150 range feels right)
+    const thr = tol*3.4;
+    const inner = thr*0.6;
+    const featherRange = Math.max(1, thr-inner);
+    for(let i=0;i<d.length;i+=4){
+      const r=d[i],g=d[i+1],b=d[i+2];
+      const sum=r+g+b+3;                    // +3 epsilon avoids div0
+      // chromaticity of pixel (brightness-independent) scaled to 0..255-ish
+      const cr=(r/sum)*255, cg=(g/sum)*255;
+      const dr=cr-ref.cr, dg=cg-ref.cg;
+      const dist=Math.sqrt(dr*dr+dg*dg)*2.4;  // amplify small chroma diffs
+      if(dist>=thr) continue;
+      // feather near the edge for soft, natural selection
+      let a = dist<=inner ? 1 : 1-((dist-inner)/featherRange);
+      a*=strength;
+      // preserve shading: scale target by how bright THIS pixel is vs the sampled wall
+      let sc=lum(r,g,b)/refLum; if(sc<0.35)sc=0.35; if(sc>1.9)sc=1.9;
+      let nr=tR*sc, ng=tG*sc, nb=tB*sc;
+      if(nr>255)nr=255; if(ng>255)ng=255; if(nb>255)nb=255;
+      d[i]   = r+(nr-r)*a;
+      d[i+1] = g+(ng-g)*a;
+      d[i+2] = b+(nb-b)*a;
+    }
+    ctx.putImageData(img,0,0);
+  }
+
+  function renderOnce(){
+    if(!drawSourceToCanvas()) return;
+    process();
+  }
+
+  function loop(){
+    if(mode==="camera" && !frozen){
+      drawSourceToCanvas();
+      process();
+    }
+    rafId=requestAnimationFrame(loop);
+  }
+
+  // ---------- Camera ----------
+  async function startCamera(){
+    try{
+      if(stream) stream.getTracks().forEach(t=>t.stop());
+      stream = await navigator.mediaDevices.getUserMedia({
+        video:{facingMode:{ideal:facing}, width:{ideal:1280}, height:{ideal:720}}, audio:false});
+      if(!video){video=document.createElement("video");video.playsInline=true;video.muted=true;}
+      video.srcObject=stream;
+      await video.play();
+      mode="camera";
+      enterApp();
+      cancelAnimationFrame(rafId); loop();
+    }catch(err){
+      $("#gateFine").innerHTML = "Couldn't reach the camera ("+(err.name||"error")+"). "+
+        "On iPhone this needs Safari. You can still <b>try it on a photo</b> below.";
+    }
+  }
+
+  function usePhoto(bitmap){
+    if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+    cancelAnimationFrame(rafId);
+    imgBitmap=bitmap; mode="image"; frozen=false;
+    enterApp();
+    renderOnce();
+    $("#btnFreeze").classList.add("hidden");
+    $("#btnFlip").classList.add("hidden");
+  }
+
+  function enterApp(){
+    $("#gate").classList.add("hidden");
+    $("#topbar").classList.remove("hidden");
+    $("#dock").classList.remove("hidden");
+    $("#hint").classList.remove("hidden");
+    if(mode==="camera"){$("#btnFreeze").classList.remove("hidden");$("#btnFlip").classList.remove("hidden");}
+    updateHint();
+  }
+
+  function updateHint(){
+    const h=$("#hintText"), chip=$("#hint");
+    if(!ref){h.textContent="Tap the wall to sample it";chip.style.opacity="1";}
+    else if(!target){h.textContent="Now pick a paint color below";chip.style.opacity="1";}
+    else {chip.style.opacity="0";}
+  }
+
+  // ---------- Sampling (tap the wall) ----------
+  function sampleAt(clientX,clientY){
+    const rect=view.getBoundingClientRect();
+    // object-fit: cover mapping from screen coords -> internal pixels
+    const scale=Math.max(rect.width/IW, rect.height/IH);
+    const dw=IW*scale, dh=IH*scale;
+    const ox=(rect.width-dw)/2, oy=(rect.height-dh)/2;
+    let px=(clientX-rect.left-ox)/scale;
+    let py=(clientY-rect.top-oy)/scale;
+    px=Math.max(0,Math.min(IW-1,px|0)); py=Math.max(0,Math.min(IH-1,py|0));
+    // average a small patch for a stable read; use the CLEAN source, not recolored
+    const wasFrozen=frozen;
+    drawSourceToCanvas();                   // repaint clean source
+    const R=4, x0=Math.max(0,px-R), y0=Math.max(0,py-R);
+    const w=Math.min(IW-x0,R*2+1), hh=Math.min(IH-y0,R*2+1);
+    const patch=ctx.getImageData(x0,y0,w,hh).data;
+    let sr=0,sg=0,sb=0,n=0;
+    for(let i=0;i<patch.length;i+=4){sr+=patch[i];sg+=patch[i+1];sb+=patch[i+2];n++;}
+    const r=sr/n,g=sg/n,b=sb/n,s=r+g+b+3;
+    ref={r,g,b,lum:lum(r,g,b),cr:(r/s)*255,cg:(g/s)*255};
+    // marker
+    const m=$("#marker");
+    m.style.left=clientX+"px";m.style.top=clientY+"px";
+    m.style.borderColor="#fff";
+    m.classList.add("show");setTimeout(()=>m.classList.remove("show"),750);
+    if(mode==="image"){renderOnce();}
+    updateHint();
+  }
+
+  view.addEventListener("click",e=>{
+    if(!mode) return;
+    sampleAt(e.clientX,e.clientY);
+  });
+
+  // ---------- Swatch strip ----------
+  function renderStrip(){
+    const strip=$("#strip"); strip.innerHTML="";
+    colors.forEach((c,idx)=>{
+      const b=document.createElement("button");
+      b.className="chip"+(idx===activeIdx?" active":"");
+      b.innerHTML=`<span class="sw" style="background:${c.h}"></span><span class="nm">${escapeHtml(c.n)}</span>`;
+      b.addEventListener("click",()=>selectColor(idx));
+      // long-press to edit
+      let t;
+      b.addEventListener("pointerdown",()=>{t=setTimeout(()=>openSheet(idx),550);});
+      ["pointerup","pointerleave","pointercancel"].forEach(ev=>b.addEventListener(ev,()=>clearTimeout(t)));
+      strip.appendChild(b);
+    });
+    const add=document.createElement("button");
+    add.className="chip add";
+    add.innerHTML=`<span class="sw">+</span><span class="nm">Add color</span>`;
+    add.addEventListener("click",()=>openSheet(-1));
+    strip.appendChild(add);
+  }
+  function escapeHtml(s){return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+  function selectColor(idx){
+    activeIdx=idx; target=hexToRgb(colors[idx].h);
+    renderStrip(); updateHint();
+    if(mode==="image") renderOnce();
+    // scroll active into view
+    const el=$("#strip").children[idx]; if(el) el.scrollIntoView({inline:"center",block:"nearest",behavior:"smooth"});
+  }
+
+  // ---------- Add / edit sheet ----------
+  let editIdx=-1;
+  function openSheet(idx){
+    editIdx=idx;
+    const isEdit=idx>=0;
+    $("#sheetTitle").textContent=isEdit?"Edit paint color":"Add a paint color";
+    $("#btnDelete").classList.toggle("hidden",!isEdit);
+    if(isEdit){$("#inName").value=colors[idx].n;setColorInputs(colors[idx].h);}
+    else{$("#inName").value="";setColorInputs("#c9b89e");}
+    $("#sheetWrap").classList.add("open");
+    setTimeout(()=>$("#inName").focus(),120);
+  }
+  function closeSheet(){$("#sheetWrap").classList.remove("open");}
+  function setColorInputs(h){$("#inColor").value=h;$("#inHex").value=h.toUpperCase();}
+  $("#inColor").addEventListener("input",e=>$("#inHex").value=e.target.value.toUpperCase());
+  $("#inHex").addEventListener("input",e=>{
+    let v=e.target.value.trim(); if(!v.startsWith("#"))v="#"+v;
+    if(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v))$("#inColor").value=v;
+  });
+  $("#btnSaveColor").addEventListener("click",()=>{
+    let h=$("#inColor").value;
+    let n=$("#inName").value.trim()||"Custom color";
+    if(editIdx>=0){colors[editIdx]={n,h};}
+    else{colors.push({n,h});activeIdx=colors.length-1;target=hexToRgb(h);}
+    save();renderStrip();closeSheet();updateHint();
+    if(mode==="image")renderOnce();
+  });
+  $("#btnDelete").addEventListener("click",()=>{
+    if(editIdx<0)return;
+    colors.splice(editIdx,1);
+    if(activeIdx===editIdx){activeIdx=-1;target=null;}
+    else if(activeIdx>editIdx){activeIdx--;}
+    save();renderStrip();closeSheet();updateHint();
+    if(mode==="image")renderOnce();
+  });
+  $("#btnCancel").addEventListener("click",closeSheet);
+  $("#sheetWrap").addEventListener("click",e=>{if(e.target.id==="sheetWrap")closeSheet();});
+
+  // ---------- Controls ----------
+  $("#tol").addEventListener("input",e=>{tol=+e.target.value;if(mode==="image")renderOnce();});
+
+  const freezeBtn=$("#btnFreeze");
+  freezeBtn.addEventListener("click",()=>{
+    frozen=!frozen;
+    freezeBtn.classList.toggle("on",frozen);
+    freezeBtn.textContent=frozen?"▶":"⏸";
+  });
+
+  $("#btnFlip").addEventListener("click",()=>{facing=facing==="environment"?"user":"environment";startCamera();});
+
+  // Compare: hold to reveal the untouched room
+  const cmpBtn=$("#btnCompare");
+  function cmpOn(){compare=true;cmpBtn.classList.add("on");if(mode==="image")renderOnce();else if(frozen){drawSourceToCanvas();}}
+  function cmpOff(){compare=false;cmpBtn.classList.remove("on");if(mode==="image")renderOnce();else if(frozen){drawSourceToCanvas();process();}}
+  cmpBtn.addEventListener("pointerdown",e=>{e.preventDefault();cmpOn();});
+  ["pointerup","pointerleave","pointercancel"].forEach(ev=>cmpBtn.addEventListener(ev,cmpOff));
+
+  // ---------- Gate actions ----------
+  $("#btnStart").addEventListener("click",startCamera);
+  $("#btnPhoto").addEventListener("click",()=>$("#fileInput").click());
+  $("#fileInput").addEventListener("change",async e=>{
+    const f=e.target.files&&e.target.files[0]; if(!f)return;
+    try{
+      const bmp=await createImageBitmap(f);
+      usePhoto(bmp);
+    }catch(err){
+      const img=new Image();img.onload=()=>usePhoto(img);img.src=URL.createObjectURL(f);
+    }
+  });
+
+  // gate preview strip
+  (function(){const p=$("#gatePreview");["#d3c6b1","#95998c","#b1613f","#3b4654","#cdd4cb"].forEach(c=>{
+    const i=document.createElement("i");i.style.background=c;p.appendChild(i);});})();
+
+  renderStrip();
+})();
+</script>
