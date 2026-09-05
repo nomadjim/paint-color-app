@@ -41,6 +41,13 @@
   #marker::after{content:"";position:absolute;inset:22px;border-radius:50%;background:#fff;
     box-shadow:0 0 0 2px rgba(0,0,0,.4)}
 
+  /* persistent anchor showing where the wall is pinned */
+  #anchor{position:fixed;width:24px;height:24px;margin:-12px 0 0 -12px;border-radius:50%;
+    border:2px solid rgba(255,255,255,.92);box-shadow:0 0 0 2px rgba(0,0,0,.4);
+    pointer-events:none;opacity:0;transition:opacity .3s;z-index:35}
+  #anchor.show{opacity:1}
+  #anchor::after{content:"";position:absolute;inset:8px;border-radius:50%;background:var(--accent)}
+
   /* ---- Top bar ---- */
   .topbar{position:fixed;top:0;left:0;right:0;z-index:30;
     display:flex;align-items:center;justify-content:space-between;gap:12px;
@@ -143,6 +150,10 @@
   .btn-save{background:var(--accent);color:#160c06}
   .btn-cancel{background:rgba(255,255,255,.07);color:var(--ink);border:1px solid var(--line)!important}
   .btn-del{background:rgba(255,80,80,.14);color:#ff9a9a;flex:none!important;padding:15px 18px!important}
+  .pickbtn{width:100%;margin:-4px 0 18px;padding:13px;border-radius:12px;border:1px dashed var(--line);
+    background:rgba(230,119,77,.10);color:var(--ink);font-size:14px;font-weight:600;
+    display:flex;align-items:center;justify-content:center;gap:8px}
+  .pickbtn:active{transform:scale(.99)}
 
   .hidden{display:none!important}
   @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
@@ -152,6 +163,7 @@
   <canvas id="view"></canvas>
 </div>
 <div id="marker"></div>
+<div id="anchor"></div>
 
 <!-- Top bar -->
 <div class="topbar hidden" id="topbar">
@@ -210,6 +222,7 @@
         <input type="text" id="inHex" placeholder="#C9B89E" autocomplete="off" spellcheck="false">
       </div>
     </div>
+    <button class="pickbtn" id="btnPick">🎯 <span>Grab the color from your camera</span></button>
     <div class="sheet-actions">
       <button class="btn-del hidden" id="btnDelete">Delete</button>
       <button class="btn-cancel" id="btnCancel">Cancel</button>
@@ -253,15 +266,22 @@
   let video=null, stream=null, facing="environment";
   let mode=null;              // 'camera' | 'image'
   let imgBitmap=null;         // for photo mode
-  let ref=null;               // sampled wall color {r,g,b, lum, cr,cg}
+  let seed=null;              // {u,v} normalized wall-anchor point in the source
   let target=null;            // {r,g,b}
   let activeIdx=-1;
-  let tol=20, strength=0.9;
+  let tol=20, strength=0.92;
   let frozen=false, compare=false;
   let rafId=null;
-  let IW=0, IH=0;             // internal processing size
+  let IW=0, IH=0;             // display / processing size
 
-  const PROC_W = 700;         // processing width cap for performance
+  const PROC_W = 680;         // display processing width cap
+
+  // offscreen mask: the flood-filled wall region, kept small for speed
+  const mcan=document.createElement("canvas");
+  const mctx=mcan.getContext("2d",{willReadFrequently:true});
+  const MW=248; let MH=0;
+  let mask=null;              // per-pixel alpha 0..255 marking the wall
+  let seedLum=1;             // luminance under the anchor this frame
 
   function hexToRgb(h){h=h.replace('#','');if(h.length===3)h=h.split('').map(c=>c+c).join('');
     return {r:parseInt(h.slice(0,2),16),g:parseInt(h.slice(2,4),16),b:parseInt(h.slice(4,6),16)};}
@@ -282,34 +302,77 @@
     return true;
   }
 
+  // Build the wall mask by flooding out from the anchor point: keep neighbouring
+  // pixels whose colour (brightness-independent) and brightness are close to the
+  // anchor, so the fill stops at windows, floor, furniture and corners.
+  function buildMask(){
+    if(!seed) return false;
+    MH=Math.max(1,Math.round(MW*IH/IW));
+    if(mcan.width!==MW||mcan.height!==MH){mcan.width=MW;mcan.height=MH;}
+    if(mode==="camera") mctx.drawImage(video,0,0,MW,MH); else mctx.drawImage(imgBitmap,0,0,MW,MH);
+    const data=mctx.getImageData(0,0,MW,MH).data;
+    const n=MW*MH;
+    if(!mask||mask.length!==n) mask=new Uint8ClampedArray(n); else mask.fill(0);
+    const visited = (buildMask._v&&buildMask._v.length===n)?buildMask._v:(buildMask._v=new Uint8Array(n));
+    visited.fill(0);
+    const stack = (buildMask._s&&buildMask._s.length>=n+8)?buildMask._s:(buildMask._s=new Int32Array(n+8));
+
+    const sx=Math.min(MW-1,Math.max(0,Math.round(seed.u*MW)));
+    const sy=Math.min(MH-1,Math.max(0,Math.round(seed.v*MH)));
+    const si=(sy*MW+sx)*4;
+    const sr=data[si],sg=data[si+1],sb=data[si+2];
+    const ssum=sr+sg+sb+3, scr=(sr/ssum)*255, scg=(sg/ssum)*255;
+    seedLum=Math.max(1, lum(sr,sg,sb));
+    const chromThr=tol*3.2, lumThr=34+tol*2.6;
+
+    let sp=0; const start=sy*MW+sx; stack[sp++]=start; visited[start]=1;
+    while(sp>0){
+      const p=stack[--sp], q=p*4;
+      const r=data[q],g=data[q+1],b=data[q+2];
+      const sum=r+g+b+3, cr=(r/sum)*255, cg=(g/sum)*255;
+      const dcr=cr-scr,dcg=cg-scg;
+      const cd=Math.sqrt(dcr*dcr+dcg*dcg)*2.4;
+      const ld=Math.abs(lum(r,g,b)-seedLum);
+      if(cd>chromThr||ld>lumThr) continue;
+      mask[p]=255;
+      const x=p%MW, y=(p/MW)|0;
+      if(x>0){const t=p-1;      if(!visited[t]){visited[t]=1;stack[sp++]=t;}}
+      if(x<MW-1){const t=p+1;   if(!visited[t]){visited[t]=1;stack[sp++]=t;}}
+      if(y>0){const t=p-MW;     if(!visited[t]){visited[t]=1;stack[sp++]=t;}}
+      if(y<MH-1){const t=p+MW;  if(!visited[t]){visited[t]=1;stack[sp++]=t;}}
+    }
+    featherMask();
+    return true;
+  }
+
+  // Soft box blur on the mask so painted edges aren't a hard cut-out.
+  function featherMask(){
+    const n=MW*MH, R=2;
+    const tmp=(featherMask._t&&featherMask._t.length===n)?featherMask._t:(featherMask._t=new Float32Array(n));
+    for(let y=0;y<MH;y++){const row=y*MW;
+      for(let x=0;x<MW;x++){let s=0,c=0;for(let k=-R;k<=R;k++){const xx=x+k;if(xx<0||xx>=MW)continue;s+=mask[row+xx];c++;}tmp[row+x]=s/c;}}
+    for(let x=0;x<MW;x++){
+      for(let y=0;y<MH;y++){let s=0,c=0;for(let k=-R;k<=R;k++){const yy=y+k;if(yy<0||yy>=MH)continue;s+=tmp[yy*MW+x];c++;}mask[y*MW+x]=s/c;}}
+  }
+
   function process(){
-    if(!ref||!target||compare) return;    // nothing to recolor / showing original
-    const img = ctx.getImageData(0,0,IW,IH);
-    const d = img.data;
-    const tR=target.r,tG=target.g,tB=target.b;
-    const refLum=Math.max(1,ref.lum);
-    // tolerance -> chromaticity distance threshold (0..~150 range feels right)
-    const thr = tol*3.4;
-    const inner = thr*0.6;
-    const featherRange = Math.max(1, thr-inner);
-    for(let i=0;i<d.length;i+=4){
-      const r=d[i],g=d[i+1],b=d[i+2];
-      const sum=r+g+b+3;                    // +3 epsilon avoids div0
-      // chromaticity of pixel (brightness-independent) scaled to 0..255-ish
-      const cr=(r/sum)*255, cg=(g/sum)*255;
-      const dr=cr-ref.cr, dg=cg-ref.cg;
-      const dist=Math.sqrt(dr*dr+dg*dg)*2.4;  // amplify small chroma diffs
-      if(dist>=thr) continue;
-      // feather near the edge for soft, natural selection
-      let a = dist<=inner ? 1 : 1-((dist-inner)/featherRange);
-      a*=strength;
-      // preserve shading: scale target by how bright THIS pixel is vs the sampled wall
-      let sc=lum(r,g,b)/refLum; if(sc<0.35)sc=0.35; if(sc>1.9)sc=1.9;
-      let nr=tR*sc, ng=tG*sc, nb=tB*sc;
-      if(nr>255)nr=255; if(ng>255)ng=255; if(nb>255)nb=255;
-      d[i]   = r+(nr-r)*a;
-      d[i+1] = g+(ng-g)*a;
-      d[i+2] = b+(nb-b)*a;
+    if(!seed||!target||compare) return;   // no anchor / no colour / showing original
+    if(!buildMask()) return;
+    const img=ctx.getImageData(0,0,IW,IH), d=img.data;
+    const tR=target.r,tG=target.g,tB=target.b, rl=seedLum;
+    const fx=MW/IW, fy=MH/IH;
+    for(let y=0;y<IH;y++){
+      const my=(y*fy)|0, mrow=my*MW, drow=y*IW*4;
+      for(let x=0;x<IW;x++){
+        const a0=mask[mrow+((x*fx)|0)]; if(a0===0) continue;
+        const i=drow+x*4;
+        const r=d[i],g=d[i+1],b=d[i+2];
+        const a=(a0/255)*strength;
+        let sc=lum(r,g,b)/rl; if(sc<0.35)sc=0.35; if(sc>1.9)sc=1.9;   // keep shading
+        let nr=tR*sc,ng=tG*sc,nb=tB*sc;
+        if(nr>255)nr=255; if(ng>255)ng=255; if(nb>255)nb=255;
+        d[i]=r+(nr-r)*a; d[i+1]=g+(ng-g)*a; d[i+2]=b+(nb-b)*a;
+      }
     }
     ctx.putImageData(img,0,0);
   }
@@ -337,6 +400,7 @@
       video.srcObject=stream;
       await video.play();
       mode="camera";
+      seed=null; $("#anchor").classList.remove("show");
       enterApp();
       cancelAnimationFrame(rafId); loop();
     }catch(err){
@@ -349,6 +413,7 @@
     if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
     cancelAnimationFrame(rafId);
     imgBitmap=bitmap; mode="image"; frozen=false;
+    seed=null; $("#anchor").classList.remove("show");
     enterApp();
     renderOnce();
     $("#btnFreeze").classList.add("hidden");
@@ -366,7 +431,7 @@
 
   function updateHint(){
     const h=$("#hintText"), chip=$("#hint");
-    if(!ref){h.textContent="Tap the wall to sample it";chip.style.opacity="1";}
+    if(!seed){h.textContent="Tap the wall to anchor it";chip.style.opacity="1";}
     else if(!target){h.textContent="Now pick a paint color below";chip.style.opacity="1";}
     else {chip.style.opacity="0";}
   }
@@ -380,30 +445,74 @@
     const ox=(rect.width-dw)/2, oy=(rect.height-dh)/2;
     let px=(clientX-rect.left-ox)/scale;
     let py=(clientY-rect.top-oy)/scale;
-    px=Math.max(0,Math.min(IW-1,px|0)); py=Math.max(0,Math.min(IH-1,py|0));
-    // average a small patch for a stable read; use the CLEAN source, not recolored
-    const wasFrozen=frozen;
-    drawSourceToCanvas();                   // repaint clean source
-    const R=4, x0=Math.max(0,px-R), y0=Math.max(0,py-R);
-    const w=Math.min(IW-x0,R*2+1), hh=Math.min(IH-y0,R*2+1);
-    const patch=ctx.getImageData(x0,y0,w,hh).data;
-    let sr=0,sg=0,sb=0,n=0;
-    for(let i=0;i<patch.length;i+=4){sr+=patch[i];sg+=patch[i+1];sb+=patch[i+2];n++;}
-    const r=sr/n,g=sg/n,b=sb/n,s=r+g+b+3;
-    ref={r,g,b,lum:lum(r,g,b),cr:(r/s)*255,cg:(g/s)*255};
-    // marker
+    px=Math.max(0,Math.min(IW-1,px)); py=Math.max(0,Math.min(IH-1,py));
+    seed={u:px/IW, v:py/IH};                 // anchor the wall here
+    updateAnchorPos();
+    // tap ripple
     const m=$("#marker");
-    m.style.left=clientX+"px";m.style.top=clientY+"px";
-    m.style.borderColor="#fff";
-    m.classList.add("show");setTimeout(()=>m.classList.remove("show"),750);
-    if(mode==="image"){renderOnce();}
+    m.style.left=clientX+"px";m.style.top=clientY+"px";m.style.borderColor="#fff";
+    m.classList.add("show");setTimeout(()=>m.classList.remove("show"),650);
+    if(mode==="image") renderOnce();
     updateHint();
   }
 
+  // Map the stored anchor back to a screen position for the persistent dot.
+  function updateAnchorPos(){
+    const a=$("#anchor");
+    if(!seed||!IW){a.classList.remove("show");return;}
+    const rect=view.getBoundingClientRect();
+    const scale=Math.max(rect.width/IW, rect.height/IH);
+    const ox=(rect.width-IW*scale)/2, oy=(rect.height-IH*scale)/2;
+    a.style.left=(rect.left+ox+seed.u*IW*scale)+"px";
+    a.style.top =(rect.top +oy+seed.v*IH*scale)+"px";
+    a.classList.add("show");
+  }
+  window.addEventListener("resize",updateAnchorPos);
+
+  let pickingColor=false, pickTargetIdx=-1, pickName="";
   view.addEventListener("click",e=>{
     if(!mode) return;
+    if(pickingColor){ pickColorFromView(e.clientX,e.clientY); return; }
     sampleAt(e.clientX,e.clientY);
   });
+
+  function rgbToHex(r,g,b){
+    const h=v=>("0"+Math.round(v).toString(16)).slice(-2);
+    return ("#"+h(r)+h(g)+h(b)).toUpperCase();
+  }
+
+  // Eyedropper: grab the true color of whatever is tapped (a paint chip, a fabric...)
+  function pickColorFromView(cx,cy){
+    const rect=view.getBoundingClientRect();
+    const scale=Math.max(rect.width/IW, rect.height/IH);
+    const ox=(rect.width-IW*scale)/2, oy=(rect.height-IH*scale)/2;
+    let px=(cx-rect.left-ox)/scale, py=(cy-rect.top-oy)/scale;
+    px=Math.max(0,Math.min(IW-1,px|0)); py=Math.max(0,Math.min(IH-1,py|0));
+    drawSourceToCanvas();                    // read the clean frame, not a recolor
+    const R=3,x0=Math.max(0,px-R),y0=Math.max(0,py-R);
+    const w=Math.min(IW-x0,R*2+1),hh=Math.min(IH-y0,R*2+1);
+    const p=ctx.getImageData(x0,y0,w,hh).data;
+    let sr=0,sg=0,sb=0,n=0;
+    for(let i=0;i<p.length;i+=4){sr+=p[i];sg+=p[i+1];sb+=p[i+2];n++;}
+    const hex=rgbToHex(sr/n,sg/n,sb/n);
+    pickingColor=false; view.classList.remove("picking");
+    if(mode==="image") renderOnce();
+    openSheet(pickTargetIdx);
+    if(pickTargetIdx<0 && pickName) $("#inName").value=pickName;
+    setColorInputs(hex);
+    const m=$("#marker");m.style.left=cx+"px";m.style.top=cy+"px";m.style.borderColor=hex;
+    m.classList.add("show");setTimeout(()=>m.classList.remove("show"),700);
+  }
+
+  function startPick(){
+    pickTargetIdx=editIdx;
+    pickName=$("#inName").value.trim();
+    closeSheet();
+    pickingColor=true; view.classList.add("picking");
+    const h=$("#hintText"),chip=$("#hint");
+    h.textContent="Tap the paint chip to grab its color";chip.style.opacity="1";
+  }
+  $("#btnPick").addEventListener("click",startPick);
 
   // ---------- Swatch strip ----------
   function renderStrip(){
@@ -444,6 +553,10 @@
     $("#btnDelete").classList.toggle("hidden",!isEdit);
     if(isEdit){$("#inName").value=colors[idx].n;setColorInputs(colors[idx].h);}
     else{$("#inName").value="";setColorInputs("#c9b89e");}
+    const pick=$("#btnPick");
+    if(mode){pick.classList.remove("hidden");
+      pick.querySelector("span").textContent = mode==="image"?"Grab the color from the photo":"Grab the color from your camera";}
+    else pick.classList.add("hidden");
     $("#sheetWrap").classList.add("open");
     setTimeout(()=>$("#inName").focus(),120);
   }
